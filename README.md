@@ -16,7 +16,7 @@ lambdas/
 dashboard/index.html      Lightsail에 올릴 대시보드
 scripts/accuracy.py       정확도 측정 (파일명 라벨 vs AI 판정)
 data/images/              테스트 이미지 20장 (정상 10, 불량 10)
-data/reference/           few-shot 기준용 정상 이미지 1장 (테스트 20장과 겹치지 않음)
+data/reference/           비교 실험 C·E용 기준 이미지 (정상 1, 불량 1 — 테스트 20장과 겹치지 않음)
 ```
 
 ---
@@ -53,13 +53,13 @@ Lambda → 함수 생성 → 새로 작성 → 런타임 **Python 3.12** → 실
 
 | 함수 | 환경 변수 (구성 → 환경 변수) | 제한 시간 (구성 → 일반 구성) |
 |---|---|---|
-| `qlens-inspect-image` | `TABLE_NAME=QlensInspections`<br>`TOPIC_ARN=<4단계 ARN>`<br>`MODEL_ID=amazon.nova-lite-v1:0`<br>`REFERENCE_KEY=reference/ok_reference.jpeg` | **1분**, 메모리 256MB |
+| `qlens-inspect-image` | `TABLE_NAME=QlensInspections`<br>`TOPIC_ARN=<4단계 ARN>`<br>`MODEL_ID=amazon.nova-lite-v1:0` | **1분**, 메모리 256MB |
 | `qlens-get-inspections` | `TABLE_NAME=QlensInspections` | 10초 |
 | `qlens-get-inspection` | `TABLE_NAME=QlensInspections` | 10초 |
 | `qlens-get-stats` | `TABLE_NAME=QlensInspections` | 10초 |
 | `qlens-daily-report` | `TABLE_NAME=QlensInspections`<br>`BUCKET_NAME=<2단계 버킷명>` | 30초 |
 
-> `REFERENCE_KEY`를 비우면 기준 이미지 없이 프롬프트만으로 판정. 두 방식의 정확도를 비교해 보고서에 넣을 수 있다.
+> 프롬프트는 비교 실험(10-1단계)에서 1위인 'A 기본 프롬프트'를 사용한다.
 > 판정 시 `on-demand throughput isn't supported` 오류가 나면 `MODEL_ID`를 `apac.amazon.nova-lite-v1:0`(추론 프로파일)로 변경.
 
 ### 6. S3 트리거 연결 (`qlens-inspect-image`)
@@ -91,6 +91,15 @@ python scripts/accuracy.py <호출URL>
 ```
 파일별 O/X, 혼동행렬, 정확도·정밀도·재현율 출력 → 보고서 3장에 사용.
 
+### 10-1. 판정 방식 비교 실험 (CloudShell)
+콘솔 아래쪽 **CloudShell** 클릭 → 오른쪽 위 **작업 → 파일 업로드** → `scripts/experiment.py` 업로드 →
+```
+python3 experiment.py <버킷이름>                               # Nova Lite로 A/B/C 비교
+python3 experiment.py <버킷이름> --model amazon.nova-pro-v1:0  # (선택) Nova Pro 비교
+```
+A 기본 프롬프트 / B 도메인 프롬프트 / C 기준 이미지 비교의 정확도·정밀도·재현율·지연시간·토큰 표 출력 → 보고서용.
+DynamoDB·SNS는 건드리지 않음(메일 안 감). 상세 결과는 `experiment_*.csv` → **작업 → 파일 다운로드**로 받기.
+
 ### 11. EventBridge 일일 리포트
 `qlens-daily-report` → 트리거 추가 → **EventBridge (CloudWatch Events)** → 새 규칙 `qlens-daily-report-schedule` → 예약 표현식
 `cron(55 14 * * ? *)`  ← UTC 14:55 = **한국시간 23:55** (그날 검사분 집계)
@@ -98,24 +107,24 @@ python scripts/accuracy.py <호출URL>
 바로 확인하려면 Lambda **테스트** 탭에서 이벤트 `{}` 로 실행 → S3 `reports/YYYY-MM-DD.json` 생성 확인.
 
 ### 12. Lightsail 대시보드 `qlens-dashboard`
-1. `dashboard/index.html`의 `REPLACE_ME` 줄을 9단계 호출 URL로 교체
-2. Lightsail → 인스턴스 생성 → 리전 시드니 → **Linux/Unix → OS 전용 → Ubuntu** → 가장 작은 요금제(3개월 무료 표시된 것) → 이름 `qlens-dashboard`
-3. 인스턴스 → **SSH를 사용하여 연결**(브라우저 터미널) →
-   ```
-   sudo apt-get update && sudo apt-get install -y nginx
-   sudo nano /var/www/html/index.html
-   ```
-   기존 내용 지우고 수정한 `index.html` 전체 붙여넣기 → `Ctrl+O`, 엔터, `Ctrl+X`
-4. 네트워킹 탭 → **고정 IP 생성 및 연결** → 브라우저에서 `http://<고정IP>` 접속
+1. `dashboard/index.html`의 `API_URL` 기본값을 9단계 호출 URL로 설정 (현재: `https://6qymgjfjw4.execute-api.ap-southeast-2.amazonaws.com/prod`)
+2. Lightsail → 인스턴스 생성 → 리전 시드니 → **Linux/Unix → OS 전용 → Ubuntu** → 가장 작은 요금제($5, Dual-stack) → 이름 `qlens-dashboard`
+3. **Advanced settings → Launch script**에 `scripts/lightsail_launch.sh` 내용 전체 붙여넣기
+   (nginx 설치 + `index.html` 배포를 자동 수행, SSH 불필요. Lightsail 시작 스크립트 한도 16KB 이내)
+4. 네트워킹 탭 → **Attach static IP** → 브라우저에서 `http://<고정IP>` 접속 (현재: `http://13.238.80.95`)
 
 ---
 
 ## API 명세
 | Method | Path | 설명 |
 |---|---|---|
-| GET | `/inspections` | 검사 이력 (최신순). `?result=DEFECT` 또는 `?result=OK` 필터 |
+| GET | `/inspections` | 검사 이력 (최신순). `?result=DEFECT`·`?result=OK`·`?review=PENDING` 필터 |
 | GET | `/inspections/{id}` | 검사 단건 |
-| GET | `/stats` | `{ total, ok, defect, unknown, defectRate, byType, byDate[] }` |
+| GET | `/stats` | `{ total, ok, defect, unknown, review, defectRate, byType, byDate[] }` |
+
+## 재검사(Human-in-the-loop)
+AI 확신도가 `LOW`이거나 응답을 해석하지 못하면 `reviewStatus=PENDING`으로 저장하고 SNS로 **[Qlens] 재검사 요청** 메일을 보낸다.
+AI 판정을 그대로 확정하지 않고 애매한 건은 작업자가 최종 확인하는 구조. 대시보드에 "재검사 필요" 건수·필터 표시.
 
 ## 리소스 정리 (공지 후)
 API Gateway `qlens-api` → Lambda 5개 → DynamoDB `QlensInspections` → S3 버킷(객체 비우기 → 삭제) → SNS 토픽·구독 → EventBridge 규칙 → **Lightsail 인스턴스 + 고정 IP (고정 IP만 남으면 과금)** → IAM `qlens-lambda-role` → CloudWatch 로그 그룹 `/aws/lambda/qlens-*`

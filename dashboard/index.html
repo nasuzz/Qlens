@@ -25,11 +25,12 @@
   th { color:var(--muted); font-weight:600; font-size:12px; }
   .table-wrap { overflow-x:auto; }
   .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:700; color:#fff; }
-  .badge.DEFECT { background:var(--def); } .badge.OK { background:var(--ok); } .badge.UNKNOWN { background:#6b7280; }
+  .badge.DEFECT { background:var(--def); } .badge.OK { background:var(--ok); } .badge.UNKNOWN { background:#6b7280; } .badge.REVIEW { background:#d97706; }
   .toolbar { display:flex; gap:8px; align-items:center; margin:12px 0; flex-wrap:wrap; }
   button, select { font:inherit; padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:pointer; }
   .error { color:var(--def); margin-top:12px; white-space:pre-wrap; }
   .reason { color:var(--muted); max-width:420px; }
+  td:nth-child(4), td:nth-child(5), td:nth-child(6) { white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -43,6 +44,7 @@
     <div class="card kpi"><div class="label">정상</div><div class="value" id="k-ok" style="color:var(--ok)">-</div></div>
     <div class="card kpi"><div class="label">불량</div><div class="value" id="k-def" style="color:var(--def)">-</div></div>
     <div class="card kpi"><div class="label">불량률</div><div class="value" id="k-rate">-</div></div>
+    <div class="card kpi"><div class="label">재검사 필요 (AI 확신도 낮음)</div><div class="value" id="k-review" style="color:#d97706">-</div></div>
   </section>
 
   <section class="charts">
@@ -54,7 +56,7 @@
   <section class="card" style="margin-top:12px">
     <h2>검사 이력</h2>
     <div class="toolbar">
-      <select id="filter"><option value="">전체</option><option value="DEFECT">불량만</option><option value="OK">정상만</option></select>
+      <select id="filter"><option value="">전체</option><option value="DEFECT">불량만</option><option value="OK">정상만</option><option value="REVIEW">재검사 필요</option></select>
       <button id="refresh">새로고침</button>
     </div>
     <div class="table-wrap">
@@ -70,7 +72,7 @@
 <script>
   // ▼ API Gateway 배포 후 Invoke URL로 교체 (또는 주소 뒤에 ?api=URL 붙여서 접속)
   const API_URL = new URLSearchParams(location.search).get("api")
-    || "https://REPLACE_ME.execute-api.ap-southeast-2.amazonaws.com/prod";
+    || "https://6qymgjfjw4.execute-api.ap-southeast-2.amazonaws.com/prod";
 
   const charts = {};
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -92,13 +94,14 @@
       const filter = document.getElementById("filter").value;
       const [stats, items] = await Promise.all([
         getJSON("/stats"),
-        getJSON("/inspections" + (filter ? `?result=${filter}` : "")),
+        getJSON("/inspections" + (filter === "REVIEW" ? "?review=PENDING" : filter ? `?result=${filter}` : "")),
       ]);
 
       document.getElementById("k-total").textContent = stats.total;
       document.getElementById("k-ok").textContent = stats.ok;
       document.getElementById("k-def").textContent = stats.defect;
       document.getElementById("k-rate").textContent = (stats.defectRate * 100).toFixed(1) + "%";
+      document.getElementById("k-review").textContent = stats.review ?? 0;
 
       draw("c-result", { type: "doughnut",
         data: { labels: ["정상", "불량"], datasets: [{ data: [stats.ok, stats.defect], backgroundColor: ["#16a34a", "#dc2626"] }] },
@@ -122,7 +125,7 @@
           <td>${esc(i.inspectedAt?.replace("T", " ").slice(0, 19))}</td>
           <td>${esc(i.inspectionId)}</td>
           <td>${esc(i.imageKey?.split("/").pop())}</td>
-          <td><span class="badge ${esc(i.result)}">${esc(i.result)}</span></td>
+          <td><span class="badge ${esc(i.result)}">${esc(i.result)}</span>${i.reviewStatus === "PENDING" ? ' <span class="badge REVIEW">재검사</span>' : ""}</td>
           <td>${esc(i.defectType)}</td>
           <td>${esc(i.confidence)}</td>
           <td class="reason">${esc(i.reason)}</td>

@@ -39,6 +39,7 @@ def build_stats(items):
         "defect": len(defects),
         "ok": sum(i.get("result") == "OK" for i in items),
         "unknown": sum(i.get("result") not in ("OK", "DEFECT") for i in items),
+        "review": sum(i.get("reviewStatus") == "PENDING" for i in items),
         "defectRate": round(len(defects) / total, 4) if total else 0,
         "byType": dict(by_type),
         "byDate": by_date,

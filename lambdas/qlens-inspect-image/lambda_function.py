@@ -16,26 +16,13 @@ table = boto3.resource("dynamodb").Table(os.environ["TABLE_NAME"])
 
 MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
 TOPIC_ARN = os.environ.get("TOPIC_ARN", "")
-REFERENCE_KEY = os.environ.get("REFERENCE_KEY", "")  # 예: reference/ok_reference.jpeg (비우면 미사용)
 KST = timezone(timedelta(hours=9))
 
-PROMPT = """당신은 주조 부품(펌프 임펠러) 품질 검사관입니다. 이미지는 임펠러를 위에서 내려다본 흑백 사진입니다.
-
-[정상 부품의 구조 - 아래는 결함이 아닙니다]
-- 가운데 원형 허브(돌출된 원통)와 그 안의 둥근 구멍(축 구멍)
-- 허브를 둘러싼 여러 겹의 동심원 홈과 링
-- 바깥쪽의 넓은 원판(플랜지)과 매끈하고 둥근 바깥 테두리
-- 금속 질감, 빛 반사, 미세한 가공 흔적
-
-[불량 판정 기준 - 아래가 명확히 보일 때만 DEFECT]
-- 기공: 표면의 작은 구멍이나 움푹 패인 점
-- 균열: 가늘게 갈라진 선
-- 테두리 결함: 바깥 테두리나 링이 깨지거나 울퉁불퉁하게 이지러짐
-- 버: 테두리 밖으로 삐져나온 불규칙한 금속 조각
-- 표면 결함: 거칠게 뜯겨나간 부분, 이물 자국
-{reference_note}
-확실하지 않으면 OK로 판정합니다. 다른 말 없이 아래 JSON으로만 답하세요.
-{{"result": "OK" 또는 "DEFECT", "defectType": "기공|균열|테두리 결함|버|표면 결함|없음", "confidence": "HIGH|MEDIUM|LOW", "reason": "판정 근거 한 문장"}}"""
+# 프롬프트 비교 실험(scripts/experiment.py, 20장) 결과 정확도 80%·재현율 90%로 1위인 'A 기본 프롬프트'.
+# 정상 구조 설명·기준 이미지를 추가한 B~E는 Nova Lite가 OK 쪽으로 쏠려 50~60%에 그쳤다.
+PROMPT = """이 주조 부품(펌프 임펠러) 이미지를 보고 정상인지 불량인지 판정하세요.
+다른 말 없이 아래 JSON으로만 답하세요.
+{"result": "OK" 또는 "DEFECT", "defectType": "기공|균열|테두리 결함|버|표면 결함|없음", "confidence": "HIGH|MEDIUM|LOW", "reason": "판정 근거 한 문장"}"""
 
 
 def _read(bucket, key):
@@ -64,18 +51,9 @@ def _parse(text):
 
 
 def inspect(bucket, key):
-    content = []
-    note = ""
-    if REFERENCE_KEY:
-        content += [
-            {"text": "[기준 이미지] 아래는 정상 부품 사진입니다."},
-            {"image": {"format": _fmt(REFERENCE_KEY), "source": {"bytes": _read(bucket, REFERENCE_KEY)}}},
-            {"text": "[검사 대상 이미지]"},
-        ]
-        note = "\n기준 이미지(정상)와 비교해 구조는 같고 위 결함이 없으면 OK입니다.\n"
-    content += [
+    content = [
         {"image": {"format": _fmt(key), "source": {"bytes": _read(bucket, key)}}},
-        {"text": PROMPT.format(reference_note=note)},
+        {"text": PROMPT},
     ]
     resp = bedrock.converse(
         modelId=MODEL_ID,
@@ -102,17 +80,28 @@ def lambda_handler(event, context):
             "model": MODEL_ID,
             **verdict,
         }
+        # Human-in-the-loop: AI 확신도가 낮거나 응답이 깨지면 사람이 재검사하도록 표시
+        needs_review = item["result"] == "UNKNOWN" or str(item["confidence"]).upper() == "LOW"
+        item["reviewStatus"] = "PENDING" if needs_review else "NONE"
+
         table.put_item(Item=item)
         print(json.dumps(item, ensure_ascii=False))
 
-        if item["result"] == "DEFECT" and TOPIC_ARN:
+        if TOPIC_ARN and (item["result"] == "DEFECT" or needs_review):
+            if item["result"] == "DEFECT":
+                subject, head = "[Qlens] 불량 부품 감지", "Qlens가 불량 부품을 감지했습니다."
+            else:
+                subject, head = "[Qlens] 재검사 요청", "AI 판정 확신도가 낮아 작업자 재검사가 필요합니다."
+            if needs_review and item["result"] == "DEFECT":
+                head += " (확신도 낮음 - 재검사 권장)"
             sns.publish(
                 TopicArn=TOPIC_ARN,
-                Subject="[Qlens] 불량 부품 감지",
+                Subject=subject,
                 Message=(
-                    "Qlens가 불량 부품을 감지했습니다.\n\n"
+                    f"{head}\n\n"
                     f"검사 ID : {item['inspectionId']}\n"
                     f"이미지  : s3://{bucket}/{key}\n"
+                    f"AI 판정 : {item['result']}\n"
                     f"불량 유형: {item['defectType']}\n"
                     f"확신도  : {item['confidence']}\n"
                     f"판정 근거: {item['reason']}\n"

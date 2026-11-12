@@ -1,4 +1,4 @@
-"""이력 조회 서비스: GET /inspections  (?result=DEFECT|OK 필터 선택)"""
+"""이력 조회 서비스: GET /inspections  (?result=DEFECT|OK, ?review=PENDING 필터 선택)"""
 import json
 import os
 
@@ -20,8 +20,10 @@ def scan_all():
 
 def lambda_handler(event, context):
     items = scan_all()
-    want = ((event or {}).get("queryStringParameters") or {}).get("result")
-    if want:
-        items = [i for i in items if i.get("result") == want.upper()]
+    params = (event or {}).get("queryStringParameters") or {}
+    if params.get("result"):
+        items = [i for i in items if i.get("result") == params["result"].upper()]
+    if params.get("review"):
+        items = [i for i in items if i.get("reviewStatus") == params["review"].upper()]
     items.sort(key=lambda i: i.get("inspectedAt", ""), reverse=True)
     return {"statusCode": 200, "headers": HEADERS, "body": json.dumps(items, ensure_ascii=False, default=str)}
