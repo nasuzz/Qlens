@@ -13,8 +13,12 @@ lambdas/
   qlens-get-inspection/   GET /inspections/{id}
   qlens-get-stats/        GET /stats
   qlens-daily-report/     EventBridge 매일 → S3 reports/
+  qlens-ws-connection/    WebSocket $connect/$disconnect → DynamoDB QlensConnections
 dashboard/index.html      Lightsail에 올릴 대시보드
 scripts/accuracy.py       정확도 측정 (파일명 라벨 vs AI 판정)
+scripts/experiment.py     판정 방식(프롬프트) 비교 실험 — CloudShell용
+scripts/lightsail_*.sh    Lightsail 시작 스크립트 / 대시보드 업데이트 스크립트
+docs/architecture/        아키텍처 다이어그램 (AWS 공식 아이콘)
 data/images/              테스트 이미지 20장 (정상 10, 불량 10)
 data/reference/           비교 실험 C·E용 기준 이미지 (정상 1, 불량 1 — 테스트 20장과 겹치지 않음)
 ```
@@ -115,6 +119,23 @@ DynamoDB·SNS는 건드리지 않음(메일 안 감). 상세 결과는 `experime
 
 ---
 
+### 13. 실시간 알림 (WebSocket) — 확장 기능
+판정이 끝나는 순간 대시보드에 팝업으로 푸시한다 (폴링 30초 → 수 초).
+1. IAM `qlens-lambda-role`에 `AmazonAPIGatewayInvokeFullAccess` 연결 (`execute-api:ManageConnections` 권한)
+2. DynamoDB 테이블 `QlensConnections` (파티션 키 `connectionId`, 문자열)
+3. Lambda `qlens-ws-connection` — 환경 변수 `CONN_TABLE=QlensConnections`
+4. API Gateway → **WebSocket API** `qlens-ws`, 라우트 선택 표현식 `request.body.action`,
+   라우트 `$connect` · `$disconnect` · `$default` 모두 → `qlens-ws-connection`, 스테이지 `prod`
+5. `qlens-inspect-image` 환경 변수 추가
+   - `CONN_TABLE=QlensConnections`
+   - `WS_ENDPOINT=https://<ws-api-id>.execute-api.ap-southeast-2.amazonaws.com/prod` (wss:// 아님, /@connections 없음)
+6. `dashboard/index.html`의 `WS_URL`을 `wss://<ws-api-id>.execute-api.ap-southeast-2.amazonaws.com/prod`로 설정 → Lightsail 반영
+   - Lightsail 브라우저 SSH는 한글 붙여넣기가 깨지므로 `scripts/lightsail_update_dashboard.sh`(gzip+base64, ASCII 전용)를
+     **Paste into terminal** 버튼으로 붙여넣는다. 마지막 줄 md5 값이 일치하면 성공.
+
+동작: 대시보드 접속 → `$connect`로 connectionId 저장 → 판정 Lambda가 결과 저장 후 `post_to_connection`으로 전원에게 전송
+→ 대시보드가 팝업 표시 + 즉시 갱신. 끊긴 연결(GoneException)은 자동 삭제, 대시보드는 5분마다 ping·끊기면 자동 재연결.
+
 ## API 명세
 | Method | Path | 설명 |
 |---|---|---|
@@ -127,4 +148,4 @@ AI 확신도가 `LOW`이거나 응답을 해석하지 못하면 `reviewStatus=PE
 AI 판정을 그대로 확정하지 않고 애매한 건은 작업자가 최종 확인하는 구조. 대시보드에 "재검사 필요" 건수·필터 표시.
 
 ## 리소스 정리 (공지 후)
-API Gateway `qlens-api` → Lambda 5개 → DynamoDB `QlensInspections` → S3 버킷(객체 비우기 → 삭제) → SNS 토픽·구독 → EventBridge 규칙 → **Lightsail 인스턴스 + 고정 IP (고정 IP만 남으면 과금)** → IAM `qlens-lambda-role` → CloudWatch 로그 그룹 `/aws/lambda/qlens-*`
+API Gateway `qlens-api`·`qlens-ws` → Lambda 6개 → DynamoDB `QlensInspections`·`QlensConnections` → S3 버킷(객체 비우기 → 삭제) → SNS 토픽·구독 → EventBridge 규칙 → **Lightsail 인스턴스 + 고정 IP (고정 IP만 남으면 과금)** → IAM `qlens-lambda-role` → CloudWatch 로그 그룹 `/aws/lambda/qlens-*`

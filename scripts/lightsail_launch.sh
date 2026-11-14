@@ -36,13 +36,29 @@ cat > /var/www/html/index.html <<'QLENS_EOF'
   .error { color:var(--def); margin-top:12px; white-space:pre-wrap; }
   .reason { color:var(--muted); max-width:420px; }
   td:nth-child(4), td:nth-child(5), td:nth-child(6) { white-space:nowrap; }
+  .ws { display:inline-flex; align-items:center; gap:6px; margin-right:12px; }
+  .ws i { width:8px; height:8px; border-radius:50%; background:#9ca3af; display:inline-block; }
+  .ws.on i { background:#22c55e; box-shadow:0 0 0 3px rgba(34,197,94,.25); }
+  .ws.off i { background:#ef4444; }
+  .toasts { position:fixed; right:16px; bottom:16px; display:flex; flex-direction:column; gap:10px; z-index:50; max-width:min(380px, calc(100vw - 32px)); }
+  .toast { background:#fff; border:1px solid var(--line); border-left:6px solid var(--ok); border-radius:10px; padding:12px 14px;
+           box-shadow:0 8px 24px rgba(0,0,0,.15); animation:slidein .25s ease-out; cursor:pointer; }
+  .toast.DEFECT { border-left-color:var(--def); }
+  .toast.REVIEW { border-left-color:#d97706; }
+  .toast b { display:block; font-size:15px; margin-bottom:2px; }
+  .toast small { color:var(--muted); display:block; margin-top:4px; }
+  .flash { animation:flash 1.2s ease-out; }
+  @keyframes slidein { from { transform:translateX(30px); opacity:0; } to { transform:none; opacity:1; } }
+  @keyframes flash { 0% { background:#fee2e2; } 100% { background:transparent; } }
+  @media (prefers-reduced-motion: reduce) { .toast, .flash { animation:none; } }
 </style>
 </head>
 <body>
 <header>
   <div><h1><span>Q</span>lens 품질 검사 대시보드</h1><small>Amazon Bedrock 기반 주조 부품 불량 판정</small></div>
-  <small id="updated">-</small>
+  <small><span class="ws" id="ws-status"><i></i><span>실시간 연결 준비 중</span></span><span id="updated">-</span></small>
 </header>
+<div class="toasts" id="toasts" aria-live="assertive"></div>
 <main>
   <section class="kpis">
     <div class="card kpi"><div class="label">총 검사</div><div class="value" id="k-total">-</div></div>
@@ -146,7 +162,72 @@ cat > /var/www/html/index.html <<'QLENS_EOF'
   document.getElementById("refresh").onclick = load;
   document.getElementById("filter").onchange = load;
   load();
-  setInterval(load, 30000);
+  setInterval(load, 30000);  // WebSocket이 끊겼을 때를 대비한 보조 갱신
+
+  // ===== 실시간 알림 (API Gateway WebSocket) =====
+  // ▼ WebSocket API 배포 후 wss:// URL로 교체 (또는 주소 뒤에 ?ws=URL 붙여서 접속)
+  const WS_URL = new URLSearchParams(location.search).get("ws")
+    || "wss://3eks979xza.execute-api.ap-southeast-2.amazonaws.com/prod";
+  let socket, retry = 1000, pingTimer;
+
+  function setWs(state, text) {
+    const el = document.getElementById("ws-status");
+    el.className = "ws " + state;
+    el.lastElementChild.textContent = text;
+  }
+
+  function beep() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = 880; g.gain.value = 0.08;
+      o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.25);
+    } catch (e) { /* 브라우저가 소리를 막으면 무시 */ }
+  }
+
+  function toast(item) {
+    const review = item.reviewStatus === "PENDING";
+    const kind = item.result === "DEFECT" ? "DEFECT" : review ? "REVIEW" : "OK";
+    const title = kind === "DEFECT" ? "🔴 불량 감지" : kind === "REVIEW" ? "🟠 재검사 필요" : "🟢 정상 판정";
+    const el = document.createElement("div");
+    el.className = "toast " + kind;
+    el.innerHTML = `<b>${title}</b>${esc(item.imageKey?.split("/").pop())}` +
+      (kind === "OK" ? "" : ` · ${esc(item.defectType)}<br>${esc(item.reason)}`) +
+      `<small>${esc(item.inspectedAt?.replace("T", " ").slice(0, 19))} · 클릭하면 닫힘</small>`;
+    el.onclick = () => el.remove();
+    document.getElementById("toasts").prepend(el);
+    setTimeout(() => el.remove(), kind === "OK" ? 5000 : 15000);
+    if (kind === "DEFECT") {
+      beep();
+      const k = document.getElementById("k-def").parentElement;
+      k.classList.remove("flash"); void k.offsetWidth; k.classList.add("flash");
+    }
+  }
+
+  function connectWs() {
+    if (WS_URL.includes("REPLACE_ME")) { setWs("", "실시간 알림 미설정"); return; }
+    socket = new WebSocket(WS_URL);
+    socket.onopen = () => {
+      setWs("on", "실시간 연결됨");
+      retry = 1000;
+      // API Gateway는 10분간 메시지가 없으면 연결을 끊으므로 5분마다 ping
+      clearInterval(pingTimer);
+      pingTimer = setInterval(() => socket.readyState === 1 && socket.send('{"action":"ping"}'), 5 * 60 * 1000);
+    };
+    socket.onmessage = e => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === "inspection") { toast(msg.item); load(); }
+      } catch (err) { console.warn("unknown message", e.data); }
+    };
+    socket.onclose = () => {
+      clearInterval(pingTimer);
+      setWs("off", `실시간 연결 끊김 · ${Math.round(retry / 1000)}초 후 재연결`);
+      setTimeout(connectWs, retry);
+      retry = Math.min(retry * 2, 30000);
+    };
+  }
+  connectWs();
 </script>
 </body>
 </html>

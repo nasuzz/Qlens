@@ -30,6 +30,7 @@ ICONS = {
     "user": "Resource-Icons_07312025/Res_General-Icons/Res_48_Light/Res_User_48_Light.svg",
     "admin": "Resource-Icons_07312025/Res_General-Icons/Res_48_Light/Res_Authenticated-User_48_Light.svg",
     "email": "Resource-Icons_07312025/Res_General-Icons/Res_48_Light/Res_Email_48_Light.svg",
+    "client": "Resource-Icons_07312025/Res_General-Icons/Res_48_Light/Res_Client_48_Light.svg",
     "camera": "Resource-Icons_07312025/Res_IoT/Res_AWS-IoT_Thing_Camera_48.svg",
     "bucket": "Resource-Icons_07312025/Res_Storage/Res_Amazon-Simple-Storage-Service_Bucket_48.svg",
 }
@@ -78,13 +79,16 @@ def icon(name, cx, cy, label="", size=64, sub="", virtual=False, side="below"):
         text(x, y, sub, 13, 500, VIRT if virtual else "#545b64", anchor)
 
 
-def group(x, y, w, h, title, color=GRAY, icon_name=None, title_color=INK):
+def group(x, y, w, h, title, color=GRAY, icon_name=None, title_color=INK, title_right=False):
     add(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="8 6"/>')
     tx = x + 14
     if icon_name:
         add(f'<image href="{data_uri(icon_name)}" x="{x}" y="{y}" width="40" height="40"/>')
         tx = x + 52
-    text(tx, y + 26, title, 16, 700, title_color, "start")
+    if title_right:
+        text(x + w - 14, y + 26, title, 16, 700, title_color, "end")
+    else:
+        text(tx, y + 26, title, 16, 700, title_color, "start")
 
 
 def arrow(points, label="", lx=None, ly=None, virtual=False, both=False, anchor="middle"):
@@ -130,13 +134,15 @@ group(320, 190, 740, 265, "판정 서비스  (S3 이벤트 기반)")
 group(320, 505, 175, 325, "대시보드", ORANGE)
 group(545, 505, 515, 325, "조회 API 서비스  (REST)")
 group(320, 865, 740, 175, "리포트 서비스  (스케줄 기반)")
-group(1370, 505, 340, 325, "모니터링 · 권한")
+group(1370, 505, 340, 325, "실시간 알림 (WebSocket)", title_right=True)
+group(1300, 865, 410, 175, "모니터링 · 권한")
 
 # ---------- actors (outside cloud) ----------
 icon("camera", 120, 235, "생산라인 카메라", 56, "(가상)", virtual=True)
 icon("user", 120, 370, "검사자", 64)
 icon("admin", 120, 665, "관리자 · 교수", 64)
 icon("email", 1850, 370, "품질 담당자", 64, "이메일 수신")
+icon("client", 1850, 585, "대시보드 화면", 64, "실시간 팝업")
 
 # ---------- row 1: inspection ----------
 icon("iot", 400, 255, "AWS IoT Core", 48, "(가상)", virtual=True, side="right")
@@ -156,6 +162,8 @@ arrow([(700, 370), (1140, 370)], "불량(DEFECT)일 때 알림", 930, 357)
 arrow([(1220, 370), (1806, 370)], "이메일 발송", 1500, 357)
 arrow([(660, 448), (660, 478), (1180, 478), (1180, 640)])
 text(1192, 560, "판정 결과 저장", 14, 700, ORANGE, "start")
+arrow([(1180, 478), (1450, 478), (1450, 552)])
+text(1320, 469, "판정 결과 푸시", 14, 700, ORANGE)
 
 # ---------- row 2: query API ----------
 icon("lightsail", 407, 650, "Amazon Lightsail", 64, "qlens-dashboard")
@@ -189,10 +197,19 @@ arrow([(695, 940), (895, 940)], "리포트 저장", 795, 927)
 arrow([(660, 1033), (660, 1085), (1265, 1085), (1265, 680), (1220, 680)])
 text(1000, 1076, "당일 검사 결과 조회", 14, 700, ORANGE)
 
+# ---------- realtime (WebSocket) ----------
+icon("apigw", 1450, 585, "API Gateway", 56, "WebSocket · qlens-ws")
+icon("lambda", 1450, 745, "AWS Lambda", 44, "qlens-ws-connection")
+icon("dynamodb", 1620, 745, "Amazon DynamoDB", 44, "QlensConnections")
+arrow([(1478, 585), (1806, 585)], "실시간 푸시", 1660, 572)
+arrow([(1450, 662), (1450, 718)])
+text(1462, 694, "$connect · $disconnect", 12, 600, ORANGE, "start")
+arrow([(1474, 745), (1594, 745)])
+text(1534, 735, "접속 목록", 12, 600, ORANGE)
+
 # ---------- monitoring / IAM ----------
-icon("cloudwatch", 1460, 640, "Amazon CloudWatch", 64, "Lambda 로그 · 지표")
-icon("iam", 1620, 640, "AWS IAM", 64, "qlens-lambda-role")
-text(1540, 780, "모든 Lambda 함수의 실행 로그 수집\nLambda 실행 역할로 서비스 접근 권한 부여", 13, 500, "#545b64")
+icon("cloudwatch", 1420, 950, "Amazon CloudWatch", 56, "Lambda 로그 · 지표")
+icon("iam", 1600, 950, "AWS IAM", 56, "qlens-lambda-role")
 
 add("</svg>")
 OUT.write_text("\n".join(parts), encoding="utf-8")
