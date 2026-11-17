@@ -12,8 +12,7 @@ lambdas/
   qlens-get-inspections/  GET /inspections        (?result=DEFECT|OK)
   qlens-get-inspection/   GET /inspections/{id}
   qlens-get-stats/        GET /stats
-  qlens-daily-report/     EventBridge 매일 → S3 reports/
-  qlens-ws-connection/    WebSocket $connect/$disconnect → DynamoDB QlensConnections
+  qlens-demo/             POST /demo → 샘플을 S3 images/로 복사 (교수님 테스트용)
 dashboard/index.html      Lightsail에 올릴 대시보드
 scripts/accuracy.py       정확도 측정 (파일명 라벨 vs AI 판정)
 scripts/experiment.py     판정 방식(프롬프트) 비교 실험 — CloudShell용
@@ -61,13 +60,13 @@ Lambda → 함수 생성 → 새로 작성 → 런타임 **Python 3.12** → 실
 | `qlens-get-inspections` | `TABLE_NAME=QlensInspections` | 10초 |
 | `qlens-get-inspection` | `TABLE_NAME=QlensInspections` | 10초 |
 | `qlens-get-stats` | `TABLE_NAME=QlensInspections` | 10초 |
-| `qlens-daily-report` | `TABLE_NAME=QlensInspections`<br>`BUCKET_NAME=<2단계 버킷명>` | 30초 |
+| `qlens-demo` | `BUCKET_NAME=<2단계 버킷명>` | 10초 (14단계에서 연결) |
 
 > 프롬프트는 비교 실험(10-1단계)에서 1위인 'A 기본 프롬프트'를 사용한다.
 > 판정 시 `on-demand throughput isn't supported` 오류가 나면 `MODEL_ID`를 `apac.amazon.nova-lite-v1:0`(추론 프로파일)로 변경.
 
 ### 6. S3 트리거 연결 (`qlens-inspect-image`)
-함수 개요 → **트리거 추가** → S3 → 버킷 선택 → 이벤트 유형 **모든 객체 생성 이벤트** → **접두사 `images/`** (필수! 없으면 reports/ 저장 시에도 실행됨) → 재귀 호출 경고 체크 → 추가
+함수 개요 → **트리거 추가** → S3 → 버킷 선택 → 이벤트 유형 **모든 객체 생성 이벤트** → **접두사 `images/`** (필수! 없으면 reference/ 등 다른 폴더 업로드에도 실행됨) → 재귀 호출 경고 체크 → 추가
 
 ### 7. 동작 확인 (이미지 1장)
 S3 `images/`에 `data/images/cast_def_0_1171.jpeg` 하나만 업로드 →
@@ -104,13 +103,7 @@ python3 experiment.py <버킷이름> --model amazon.nova-pro-v1:0  # (선택) No
 A 기본 프롬프트 / B 도메인 프롬프트 / C 기준 이미지 비교의 정확도·정밀도·재현율·지연시간·토큰 표 출력 → 보고서용.
 DynamoDB·SNS는 건드리지 않음(메일 안 감). 상세 결과는 `experiment_*.csv` → **작업 → 파일 다운로드**로 받기.
 
-### 11. EventBridge 일일 리포트
-`qlens-daily-report` → 트리거 추가 → **EventBridge (CloudWatch Events)** → 새 규칙 `qlens-daily-report-schedule` → 예약 표현식
-`cron(55 14 * * ? *)`  ← UTC 14:55 = **한국시간 23:55** (그날 검사분 집계)
-
-바로 확인하려면 Lambda **테스트** 탭에서 이벤트 `{}` 로 실행 → S3 `reports/YYYY-MM-DD.json` 생성 확인.
-
-### 12. Lightsail 대시보드 `qlens-dashboard`
+### 11. Lightsail 대시보드 `qlens-dashboard`
 1. `dashboard/index.html`의 `API_URL` 기본값을 9단계 호출 URL로 설정 (현재: `https://6qymgjfjw4.execute-api.ap-southeast-2.amazonaws.com/prod`)
 2. Lightsail → 인스턴스 생성 → 리전 시드니 → **Linux/Unix → OS 전용 → Ubuntu** → 가장 작은 요금제($5, Dual-stack) → 이름 `qlens-dashboard`
 3. **Advanced settings → Launch script**에 `scripts/lightsail_launch.sh` 내용 전체 붙여넣기
@@ -119,22 +112,15 @@ DynamoDB·SNS는 건드리지 않음(메일 안 감). 상세 결과는 `experime
 
 ---
 
-### 13. 실시간 알림 (WebSocket) — 확장 기능
-판정이 끝나는 순간 대시보드에 팝업으로 푸시한다 (폴링 30초 → 수 초).
-1. IAM `qlens-lambda-role`에 `AmazonAPIGatewayInvokeFullAccess` 연결 (`execute-api:ManageConnections` 권한)
-2. DynamoDB 테이블 `QlensConnections` (파티션 키 `connectionId`, 문자열)
-3. Lambda `qlens-ws-connection` — 환경 변수 `CONN_TABLE=QlensConnections`
-4. API Gateway → **WebSocket API** `qlens-ws`, 라우트 선택 표현식 `request.body.action`,
-   라우트 `$connect` · `$disconnect` · `$default` 모두 → `qlens-ws-connection`, 스테이지 `prod`
-5. `qlens-inspect-image` 환경 변수 추가
-   - `CONN_TABLE=QlensConnections`
-   - `WS_ENDPOINT=https://<ws-api-id>.execute-api.ap-southeast-2.amazonaws.com/prod` (wss:// 아님, /@connections 없음)
-6. `dashboard/index.html`의 `WS_URL`을 `wss://<ws-api-id>.execute-api.ap-southeast-2.amazonaws.com/prod`로 설정 → Lightsail 반영
-   - Lightsail 브라우저 SSH는 한글 붙여넣기가 깨지므로 `scripts/lightsail_update_dashboard.sh`(gzip+base64, ASCII 전용)를
-     **Paste into terminal** 버튼으로 붙여넣는다. 마지막 줄 md5 값이 일치하면 성공.
+### 12. 직접 테스트 버튼 (데모) — 교수님 테스트용
+1. Lambda `qlens-demo` — 환경 변수 `BUCKET_NAME=<버킷명>`, 제한 시간 10초
+2. API Gateway `qlens-api` → 리소스 `/demo` → **POST** (Lambda 프록시 통합) → `qlens-demo` → **API 배포(prod)**
+3. 스테이지 `prod` → 편집 → 제한 설정 **조절 중** 켜기 (요율 5, 버스트 10)
+4. 대시보드 갱신 — Lightsail 브라우저 SSH는 한글 붙여넣기가 깨지므로 `scripts/lightsail_update_dashboard.sh`(gzip+base64, ASCII 전용)를
+   **Paste into terminal** 버튼으로 붙여넣는다. 마지막 줄 md5 값이 일치하면 성공.
 
-동작: 대시보드 접속 → `$connect`로 connectionId 저장 → 판정 Lambda가 결과 저장 후 `post_to_connection`으로 전원에게 전송
-→ 대시보드가 팝업 표시 + 즉시 갱신. 끊긴 연결(GoneException)은 자동 삭제, 대시보드는 5분마다 ping·끊기면 자동 재연결.
+대시보드의 "✖ 불량 샘플 검사" 버튼 → `POST /demo` → `images/cast_def_*` 중 하나를 `images/demo-<시각>-<파일명>`으로 복사
+→ S3 이벤트로 기존 판정 파이프라인 실행 → 대시보드가 2초 간격으로 `/inspections`를 확인해 결과가 저장되면(약 3초) 팝업. 브라우저는 `text/plain` 본문으로 호출해 CORS preflight가 필요 없다.
 
 ## API 명세
 | Method | Path | 설명 |
@@ -142,10 +128,15 @@ DynamoDB·SNS는 건드리지 않음(메일 안 감). 상세 결과는 `experime
 | GET | `/inspections` | 검사 이력 (최신순). `?result=DEFECT`·`?result=OK`·`?review=PENDING` 필터 |
 | GET | `/inspections/{id}` | 검사 단건 |
 | GET | `/stats` | `{ total, ok, defect, unknown, review, defectRate, byType, byDate[] }` |
+| POST | `/demo` | 본문 `{"kind":"defect"|"ok"}` → 샘플 업로드 후 202 `{ sample, imageKey }` |
 
 ## 재검사(Human-in-the-loop)
 AI 확신도가 `LOW`이거나 응답을 해석하지 못하면 `reviewStatus=PENDING`으로 저장하고 SNS로 **[Qlens] 재검사 요청** 메일을 보낸다.
 AI 판정을 그대로 확정하지 않고 애매한 건은 작업자가 최종 확인하는 구조. 대시보드에 "재검사 필요" 건수·필터 표시.
 
+## 확장 구상 (미구현 · 아키텍처 다이어그램의 회색 점선)
+- 실시간 알림: API Gateway WebSocket으로 판정 결과를 대시보드에 즉시 푸시 (현재는 30초 폴링)
+- 일일 리포트: EventBridge 스케줄 → Lambda → S3 `reports/` 집계 저장
+
 ## 리소스 정리 (공지 후)
-API Gateway `qlens-api`·`qlens-ws` → Lambda 6개 → DynamoDB `QlensInspections`·`QlensConnections` → S3 버킷(객체 비우기 → 삭제) → SNS 토픽·구독 → EventBridge 규칙 → **Lightsail 인스턴스 + 고정 IP (고정 IP만 남으면 과금)** → IAM `qlens-lambda-role` → CloudWatch 로그 그룹 `/aws/lambda/qlens-*`
+API Gateway `qlens-api` → Lambda 5개 → DynamoDB `QlensInspections` → S3 버킷(객체 비우기 → 삭제) → SNS 토픽·구독 → **Lightsail 인스턴스 + 고정 IP (고정 IP만 남으면 과금)** → IAM `qlens-lambda-role` → CloudWatch 로그 그룹 `/aws/lambda/qlens-*`

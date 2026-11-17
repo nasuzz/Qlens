@@ -36,10 +36,6 @@ cat > /var/www/html/index.html <<'QLENS_EOF'
   .error { color:var(--def); margin-top:12px; white-space:pre-wrap; }
   .reason { color:var(--muted); max-width:420px; }
   td:nth-child(4), td:nth-child(5), td:nth-child(6) { white-space:nowrap; }
-  .ws { display:inline-flex; align-items:center; gap:6px; margin-right:12px; }
-  .ws i { width:8px; height:8px; border-radius:50%; background:#9ca3af; display:inline-block; }
-  .ws.on i { background:#22c55e; box-shadow:0 0 0 3px rgba(34,197,94,.25); }
-  .ws.off i { background:#ef4444; }
   .toasts { position:fixed; right:16px; bottom:16px; display:flex; flex-direction:column; gap:10px; z-index:50; max-width:min(380px, calc(100vw - 32px)); }
   .toast { background:#fff; border:1px solid var(--line); border-left:6px solid var(--ok); border-radius:10px; padding:12px 14px;
            box-shadow:0 8px 24px rgba(0,0,0,.15); animation:slidein .25s ease-out; cursor:pointer; }
@@ -51,15 +47,36 @@ cat > /var/www/html/index.html <<'QLENS_EOF'
   @keyframes slidein { from { transform:translateX(30px); opacity:0; } to { transform:none; opacity:1; } }
   @keyframes flash { 0% { background:#fee2e2; } 100% { background:transparent; } }
   @media (prefers-reduced-motion: reduce) { .toast, .flash { animation:none; } }
+  .demo { display:flex; flex-wrap:wrap; align-items:center; gap:12px 24px; margin-bottom:12px; border-left:0; background:#eef4ff; }
+  .demo h2 { margin:0 0 4px; }
+  .demo p { margin:0; color:var(--muted); font-size:14px; }
+  .demo > div:first-child { flex:1 1 360px; }
+  .demo-btns { display:flex; gap:8px; flex-wrap:wrap; }
+  .demo-btn { font-weight:700; color:#fff; border:0; padding:10px 16px; border-radius:8px; }
+  .demo-btn.ok { background:var(--ok); } .demo-btn.def { background:var(--def); }
+  .demo-btn:disabled { opacity:.5; cursor:wait; }
+  .demo-status { flex-basis:100%; font-size:13px; color:var(--text); min-height:18px; }
 </style>
 </head>
 <body>
 <header>
   <div><h1><span>Q</span>lens 품질 검사 대시보드</h1><small>Amazon Bedrock 기반 주조 부품 불량 판정</small></div>
-  <small><span class="ws" id="ws-status"><i></i><span>실시간 연결 준비 중</span></span><span id="updated">-</span></small>
+  <small id="updated">-</small>
 </header>
 <div class="toasts" id="toasts" aria-live="assertive"></div>
 <main>
+  <section class="card demo">
+    <div>
+      <h2>🧪 직접 테스트해 보기</h2>
+      <p>버튼을 누르면 Kaggle 샘플 부품 사진이 S3에 업로드되고, AI(Bedrock)가 판정해 <b>수 초 안에</b> 결과가 팝업과 표에 표시됩니다.</p>
+    </div>
+    <div class="demo-btns">
+      <button type="button" class="demo-btn ok" data-kind="ok">✔ 정상 샘플 검사</button>
+      <button type="button" class="demo-btn def" data-kind="defect">✖ 불량 샘플 검사</button>
+    </div>
+    <div class="demo-status" id="demo-status" aria-live="polite"></div>
+  </section>
+
   <section class="kpis">
     <div class="card kpi"><div class="label">총 검사</div><div class="value" id="k-total">-</div></div>
     <div class="card kpi"><div class="label">정상</div><div class="value" id="k-ok" style="color:var(--ok)">-</div></div>
@@ -162,29 +179,9 @@ cat > /var/www/html/index.html <<'QLENS_EOF'
   document.getElementById("refresh").onclick = load;
   document.getElementById("filter").onchange = load;
   load();
-  setInterval(load, 30000);  // WebSocket이 끊겼을 때를 대비한 보조 갱신
+  setInterval(load, 30000);  // 30초마다 자동 갱신
 
-  // ===== 실시간 알림 (API Gateway WebSocket) =====
-  // ▼ WebSocket API 배포 후 wss:// URL로 교체 (또는 주소 뒤에 ?ws=URL 붙여서 접속)
-  const WS_URL = new URLSearchParams(location.search).get("ws")
-    || "wss://3eks979xza.execute-api.ap-southeast-2.amazonaws.com/prod";
-  let socket, retry = 1000, pingTimer;
-
-  function setWs(state, text) {
-    const el = document.getElementById("ws-status");
-    el.className = "ws " + state;
-    el.lastElementChild.textContent = text;
-  }
-
-  function beep() {
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const o = ctx.createOscillator(), g = ctx.createGain();
-      o.frequency.value = 880; g.gain.value = 0.08;
-      o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.25);
-    } catch (e) { /* 브라우저가 소리를 막으면 무시 */ }
-  }
-
+  // ===== 판정 결과 알림 팝업 =====
   function toast(item) {
     const review = item.reviewStatus === "PENDING";
     const kind = item.result === "DEFECT" ? "DEFECT" : review ? "REVIEW" : "OK";
@@ -196,38 +193,54 @@ cat > /var/www/html/index.html <<'QLENS_EOF'
       `<small>${esc(item.inspectedAt?.replace("T", " ").slice(0, 19))} · 클릭하면 닫힘</small>`;
     el.onclick = () => el.remove();
     document.getElementById("toasts").prepend(el);
-    setTimeout(() => el.remove(), kind === "OK" ? 5000 : 15000);
+    setTimeout(() => el.remove(), kind === "OK" ? 6000 : 15000);
     if (kind === "DEFECT") {
-      beep();
       const k = document.getElementById("k-def").parentElement;
       k.classList.remove("flash"); void k.offsetWidth; k.classList.add("flash");
     }
   }
 
-  function connectWs() {
-    if (WS_URL.includes("REPLACE_ME")) { setWs("", "실시간 알림 미설정"); return; }
-    socket = new WebSocket(WS_URL);
-    socket.onopen = () => {
-      setWs("on", "실시간 연결됨");
-      retry = 1000;
-      // API Gateway는 10분간 메시지가 없으면 연결을 끊으므로 5분마다 ping
-      clearInterval(pingTimer);
-      pingTimer = setInterval(() => socket.readyState === 1 && socket.send('{"action":"ping"}'), 5 * 60 * 1000);
-    };
-    socket.onmessage = e => {
+  // 업로드한 샘플의 판정 결과가 DynamoDB에 저장될 때까지 조회 API를 2초 간격으로 확인 (최대 30초)
+  async function waitForResult(imageKey, status) {
+    for (let i = 0; i < 15; i++) {
+      await new Promise(r => setTimeout(r, 2000));
       try {
-        const msg = JSON.parse(e.data);
-        if (msg.type === "inspection") { toast(msg.item); load(); }
-      } catch (err) { console.warn("unknown message", e.data); }
-    };
-    socket.onclose = () => {
-      clearInterval(pingTimer);
-      setWs("off", `실시간 연결 끊김 · ${Math.round(retry / 1000)}초 후 재연결`);
-      setTimeout(connectWs, retry);
-      retry = Math.min(retry * 2, 30000);
-    };
+        const items = await getJSON("/inspections");
+        const hit = items.find(it => it.imageKey === imageKey);
+        if (hit) {
+          status.textContent = `✅ 판정 완료 (${(i + 1) * 2}초 이내): ${hit.result} · ${hit.defectType}`;
+          toast(hit);
+          load();
+          return;
+        }
+      } catch (e) { /* 다음 시도에서 재확인 */ }
+    }
+    status.textContent = "판정 결과가 아직 없습니다. 잠시 후 새로고침해 주세요.";
   }
-  connectWs();
+
+  // ===== 직접 테스트 (POST /demo → 샘플 업로드 → 판정 파이프라인) =====
+  document.querySelectorAll(".demo-btn").forEach(btn => btn.addEventListener("click", async () => {
+    const status = document.getElementById("demo-status");
+    const btns = document.querySelectorAll(".demo-btn");
+    btns.forEach(b => b.disabled = true);
+    status.textContent = "샘플 업로드 중…";
+    try {
+      // text/plain 본문 → CORS preflight 없이 바로 호출되는 단순 요청
+      const res = await fetch(API_URL + "/demo", {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
+        body: JSON.stringify({ kind: btn.dataset.kind }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || `HTTP ${res.status}`);
+      status.textContent = `📤 ${data.sample} 업로드 완료 → AI 판정 중…`;
+      await waitForResult(data.imageKey, status);
+    } catch (e) {
+      status.textContent = "요청 실패: " + e.message;
+    } finally {
+      btns.forEach(b => b.disabled = false);
+    }
+  }));
 </script>
 </body>
 </html>
